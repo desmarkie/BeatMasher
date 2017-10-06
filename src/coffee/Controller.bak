@@ -1,0 +1,230 @@
+class Controller
+
+	constructor: ( @app ) ->
+
+		@dropCount = 0
+		@currentPadId = null
+		@curSpeedMode = 0
+		@speedModes = ['Tempo', 'Pad Speed', 'Sample Speed']
+
+		@signals =
+			tick: 					new signals.Signal()
+			optionButtonClicked: 	new signals.Signal()
+			bankButtonClicked: 		new signals.Signal()
+			contextButtonClicked: 	new signals.Signal()
+			sliceUpdated:			new signals.Signal()
+
+		@signals.tick.add 					@onMetronomeTicked
+		@signals.bankButtonClicked.add 		@onBankButtonClicked
+		@signals.optionButtonClicked.add 	@onOptionButtonClicked
+		@signals.contextButtonClicked.add 	@onContextButtonClicked
+		@signals.sliceUpdated.add			@onSliceUpdated
+
+
+	init: =>
+		@data = @app.padData
+
+		@app.metronome.signals 		  = @signals.tick
+		@app.sliceBank.signals 		  = @signals.bankButtonClicked
+		@app.optionButtons.signals 	  = @signals.optionButtonClicked
+		@app.contextButtons.signals   = @signals.contextButtonClicked
+		@app.keyboardListener.signals = @signals.bankButtonClicked
+		@app.sliceEditor.signals	  = @signals.sliceUpdated
+
+		@app.audioManager.handleSampleEnd = @handleSampleEnd
+
+		null
+
+	playSample: ( padId, delay = 0 ) =>
+		data = @data.data[padId]
+		if data.props.sampleId != 'empty'
+			# stop if already playing (delayed if needed so no cutoff)
+			if data.player != null then @app.audioManager.stopSample data.player.key, delay
+			# get the sample id
+			sampleData = @data.getSample data.props.sampleId
+			if sampleData.sampleId is 'empty' then return
+			# update delay value
+			data.props['delay'] = delay
+			data.props['baseRate'] = sampleData.baseSpeed
+			data.props['playbackRate'] = data.props.baseRate * data.props.padRate
+			# play the sample
+			data.player = @app.audioManager.playSample sampleData.sampleId, data.props
+			# store the buttonId on the sample for callback usage
+			data.player.buttonId = padId
+			# turn the button state to on
+			if @app.mode != 'prgm' then @app.sliceBank.hitButton padId
+
+		null
+
+	handleSampleEnd: (key) =>
+		if @app.audioManager.samples[key] != undefined
+			@app.sliceBank.releaseButton @app.audioManager.samples[key].buttonId
+		delete @app.audioManager.samples[key]
+		null
+
+		#schedule forthcoming sequencer hits
+	onMetronomeTicked: (beatId, nextBeatTime) =>
+		# for each pad
+		for i in [0...16]
+			# is it a hit on that beat?
+			patternData = @data.getPadPatternData(i.toString())[beatId]
+			if patternData
+				@playSample i.toString(), nextBeatTime
+
+		if @app.mode is 'prgm'
+			@app.sliceBank.pulseButton beatId
+		null
+
+		# an option button has been clicked
+	onOptionButtonClicked: ( id ) =>
+		if id is 't--' or id is 't++'
+			@handleSpeedUpdate id
+		else if id is 'play'
+			@app.metronome.play()
+		else if id is 'stop'
+			@app.metronome.stop()
+		else if id is 'edit'
+			@app.mode = 'edsel'
+			@app.sliceBank.setPadStates @data.data
+			@displayMessage 'Select Pad'
+		else if id is 'prgm'
+			@app.mode = 'prsel'
+			@app.sliceBank.setPadStates @data.data
+			@displayMessage 'Select Pad'
+			@app.sliceEditor.disableTouchScreen()
+		else if id is 'pads'
+			@app.mode = 'pads'
+			@app.optionButtons.select 'pads'
+			@app.sliceBank.setPadStates @data.data
+			@displayMessage 'Pads'
+			@app.sliceEditor.disableTouchScreen()
+		else if id is 'tempo'
+			@curSpeedMode++
+			@curSpeedMode %= @speedModes.length
+			@displayMessage @speedModes[@curSpeedMode]
+		null
+
+	handleSpeedUpdate: (type) =>
+		if @curSpeedMode is 0
+			if type is 't--' then @app.metronome.tempo-- else @app.metronome.tempo++
+			@displayMessage 'Tempo : '+@app.metronome.tempo
+		else if @curSpeedMode is 1
+			val = if type is 't--' then -0.01 else 0.01
+			@data.getPadSampleData(@currentPadId).padRate += val
+			@displayMessage 'Pad Speed : '+@data.getPadSampleData(@currentPadId).padRate
+		else if @curSpeedMode is 2
+			val = if type is 't--' then -0.01 else 0.01
+			id = @data.getPadSampleData(@currentPadId).sampleId
+			@data.getSample(id).baseSpeed += val
+			@displayMessage 'Sample Speed : '+@data.getSample(id).baseSpeed
+		null
+
+		# a context sensitive button has been clicked
+	onContextButtonClicked: ( id ) =>
+		if @app.mode is 'drop'
+			if @app.dropUrl is null then return
+			@app.contextButtons.release()
+			@data.setSample id, 'drop'+@dropCount
+			@dropCount++
+		else if @app.mode is 'edit'
+			# console.log @currentPadId, id
+			data = @data.getPadSampleData @currentPadId
+			data.sampleId = id
+			@app.sliceEditor.setProperties data, @data.getSample(data.sampleId).sampleId
+			# auto slicing
+			if parseInt(@currentPadId) < 15 then @enterSliceMode()
+		null
+
+	onSliceUpdated: (property, value) =>
+		data = @data.getPadSampleData(@currentPadId)
+		console.log 'DATA UPDATE', data
+		if property is 'start'
+			data.startPos = value
+		else 
+			data.length = value
+		console.log 'DATA UPDATED', data
+		null
+
+	# one of the pads has been clicked
+	onBankButtonClicked: (padId) =>
+		if @app.keyboardListener.shiftPressed or @app.mode is 'edsel'
+			@enterEditMode padId
+		else if @app.mode is 'prsel'
+			@enterPatternMode padId
+		else if @app.mode is 'prgm'
+			@togglePatternBeat padId
+		else if @app.mode is 'slice'
+			@autoSliceSample padId
+		else
+			@playSample padId
+		null
+
+	enterPatternMode: ( id ) =>
+		@app.mode = 'prgm'
+		@app.optionButtons.select 'prgm'
+		@currentPadId = id
+		@app.sliceBank.setPatternStates @data.getPadPatternData @currentPadId
+		@displayMessage 'Program'
+		# @app.sliceEditor.disableTouchScreen()
+		null
+
+	enterEditMode: ( id ) =>
+		@currentPadId = id
+		data = @data.getPadSampleData(id)
+		sampleId = if data.sampleId is 'empty' then 'empty' else @data.getSample(data.sampleId).sampleId
+		console.log 'DRAW IT!!'
+		@app.sliceEditor.setProperties data, sampleId
+		@app.sliceEditor.enableTouchScreen()
+		@app.mode = 'edit'
+		@app.optionButtons.select 'edit'
+		if !@app.sliceBank.buttons[id].on then @app.sliceBank.buttons[id].turnOn()
+		null
+
+	togglePatternBeat: ( id ) =>
+		data = @data.getPadPatternData(@currentPadId)
+		idString = parseInt id
+		if data[idString] is 1
+			data[idString] = 0
+		else
+			data[idString] = 1
+		@app.sliceBank.setButtonOn id, data[idString]
+		null
+
+	enterSliceMode: =>
+		@app.mode = 'slice'
+		@app.sliceBank.showSliceTargets parseInt(@currentPadId)
+		@displayMessage 'Auto-Slice?'
+		null
+
+	displayMessage: (msg) =>
+		@app.sliceEditor.sampleDisplay.showMessage msg
+		null
+
+	autoSliceSample: ( endId ) =>
+		@app.mode = 'edit'
+		if endId is @currentPadId
+			@app.sliceBank.setPadStates @data.data
+			return
+
+		sampleId = @data.getPadSampleData(@currentPadId).sampleId
+		start = parseInt @currentPadId
+		end = parseInt(endId)+1
+		slices = end - start
+		console.log 'slicing', slices
+		ct = 0
+		for i in [start...start+slices]
+			props = 
+				playbackRate: 1
+				padRate: 1
+				baseRate: 1
+				startPos: (1/slices) * ct
+				length: (1/slices)
+				sampleId: sampleId
+			@data.setPadSampleData i.toString(), props
+			ct++
+
+		data = @data.getPadSampleData @currentPadId
+		sampleId = if data.sampleId is 'empty' then 'empty' else @data.getSample(data.sampleId).sampleId
+		@app.sliceEditor.setProperties data, sampleId
+		@app.sliceBank.setPadStates @data.data
+		null

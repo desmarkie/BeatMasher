@@ -1,0 +1,159 @@
+# import audio.*
+# import views.*
+# import ui.*
+class App
+
+	constructor: ->
+		###
+			App entry point
+		###
+		if DEBUG then console.log 'App started'
+
+		@pixi = new PIXI.CanvasRenderer window.innerWidth, window.innerHeight
+		@stage = new PIXI.Stage 0x323232
+
+		@pulseCount = 0
+		@pulseTime = 60
+
+		@controller = new Controller @
+
+		# pads, edit, prgm, edsel, prsel, drop
+		# play the samples, edit a sample, program a sample's pattern, select a sample to edit, select a sample to program, dropped a sound file
+		@mode = 'pads'
+
+		document.body.appendChild @pixi.view
+		@pixi.view.addEventListener 'dragover', (e) =>
+			e.preventDefault()
+
+		@pixi.view.addEventListener 'drop', (e) =>
+			e.preventDefault()
+			@loadSoundFile e.dataTransfer.files[0]
+
+		@loader = new LoaderView()
+		@stage.addChild @loader
+
+		@holder = new PIXI.DisplayObjectContainer()
+		@stage.addChild @holder
+		@holder.alpha = 0
+
+		@audioManager = new WebAudioManager()
+		@audioManager.setVolume 0.5
+		# @audioManager.loadSamples [
+		# 	{url:'samples/amen.mp3', id:'amen'},
+		# 	{url:'samples/reaktor-crop.wav', id:'reakt'},
+		# 	{url:'samples/specialrequest.wav', id:'specialrequest'},
+		# 	{url:'samples/808-Kicks23.wav', id:'808'}
+		# 	], =>
+		# 	@addButtons()
+		# 	null
+
+		@audioManager.loadSamples [
+			{url:'samples/amen.mp3', id:'amen'}
+			], =>
+			@addButtons()
+			null
+
+		@sample = null
+		@dropUrl = null
+
+		@metronome = new WebAudioMetronome @audioManager.context
+		# @metronome.tempo = 175
+		@metronome.output.gain.value = 0.4
+
+		@keyboardListener = new KeyboardListener()
+
+		@padData = new PadBank()
+
+		@optionButtons = new OptionButtons()
+		@optionButtons.position.x = 264
+		@optionButtons.position.y = 66
+
+		@contextButtons = new ContextButtons()
+		@contextButtons.position.x = 264
+		@contextButtons.position.y = 165
+		
+		@holder.addChild @optionButtons
+		@holder.addChild @contextButtons
+
+		requestAnimationFrame @update
+
+
+		# called when file is dropped on canvas
+	loadSoundFile: ( src ) =>
+		if !src.type.match(/audio.*/) then return
+
+		@mode = 'drop'
+		@contextButtons.hit()
+
+		@reader = new FileReader()
+		@reader.onload = @handleDroppedSoundLoad
+		@reader.readAsDataURL src
+		null
+
+		# called when a dropped sound has finished loading
+	handleDroppedSoundLoad: (e) =>
+		id = 'drop'+@controller.dropCount
+		@audioManager.loadSamples [{url:@reader.result, id:id}], =>
+			# console.log 'Dropped Sample Loaded'
+			@dropUrl = @reader.result
+			null
+		null
+
+
+	addButtons: =>
+		@sliceBank = new SliceBank @audioManager
+		@holder.addChild @sliceBank
+
+		@sliceBank.setPadStates @padData.data
+		@padData.setSample 'A', 'amen'
+		# @padData.setSample 'B', 'reakt'
+		# @padData.setSample 'C', 'specialrequest'
+		# @padData.setSample 'D', '808'
+
+		@addSliceEditor()
+		null
+
+	addSliceEditor: =>
+
+		@sliceEditor = new BeatSliceEditor @audioManager
+		@sliceEditor.position.x = 265
+		@sliceEditor.position.y = 1
+		@holder.addChild @sliceEditor
+		# @sliceEditor.signals.adjustButtonUpdated.add @updateSliceProperties
+		@loader.hide =>
+			@stage.removeChild @loader
+			@holder.position.x = (window.innerWidth - @holder.width) * 0.5
+			@holder.position.y = (window.innerHeight - @holder.height) * 0.5
+			TweenMax.to @holder, 0.8, {alpha:1, ease:Power4.easeOut}
+			@keyboardListener.enable()
+			@controller.init()
+			@sliceEditor.sampleDisplay.showMessage 'Hello :)'
+
+
+		null
+
+	updateSliceProperties: =>
+		@sliceBank.updateProperties @sliceEditor.props
+		null
+
+	update: =>
+		if @sliceEditor
+			@sliceEditor.update()
+
+		@pulseCount++
+		if @pulseCount is @pulseTime
+			@pulseCount = 0
+			if @mode is 'edsel' then @optionButtons.editButton.pulse()
+			if @mode is 'prsel' then @optionButtons.prgmButton.pulse()
+			# if @mode is 'drop' then @contextButtons.pulse()
+
+		@metronome.update()
+		@pixi.render @stage
+		requestAnimationFrame @update
+		null
+
+	
+
+
+
+		
